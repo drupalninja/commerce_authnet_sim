@@ -154,7 +154,7 @@ function commerce_authnet_sim_order_form($form, &$form_state, $order, $settings)
     'x_relay_response' => 'false',
     // return/redirect back values
     'x_receipt_link_method' => 'post',
-    'x_receipt_link_text' => 'Click here for the secure payment form',
+    'x_receipt_link_text' => 'Click here to complete your order',
     'x_receipt_link_url' => $settings['return'],
     // customer ip
     'x_customer_ip' => substr(ip_address(), 0, 15),
