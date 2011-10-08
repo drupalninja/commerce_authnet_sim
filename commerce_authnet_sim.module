@@ -1,0 +1,252 @@
+<?php
+
+/**
+ * @file
+ * Implements Authorize.net payment services for use with Drupal Commerce.
+ */
+
+// Authorize.Net transaction mode definitions:
+define('AUTHNET_SIM_TXN_MODE_LIVE', 'live');
+define('AUTHNET_SIM_TXN_MODE_LIVE_TEST', 'live_test');
+define('AUTHNET_SIM_TXN_MODE_DEVELOPER', 'developer');
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function commerce_authnet_sim_commerce_payment_method_info() {
+  $payment_methods = array();
+
+  $payment_methods['authnet_sim'] = array(
+    'base' => 'commerce_authnet_sim',
+    'title' => t('Authorize.Net SIM - Credit Card'),
+    'short_title' => t('Authorize.Net SIM CC'),
+    'display_title' => t('Credit card'),
+    'description' => t('Integrates Authorize.Net Simple Integration Method for card not present CC transactions.'),
+    'terminal' => FALSE,
+    'offsite' => TRUE,
+    'offsite_autoredirect' => FALSE,
+  );
+
+  return $payment_methods;
+}
+
+/**
+ * Payment method callback: settings form.
+ */
+function commerce_authnet_sim_settings_form($settings = NULL) {
+  $form = array();
+
+  // Merge default settings into the stored settings array.
+  $settings = (array) $settings + array(
+    'login' => '',
+    'tran_key' => '',
+    'txn_mode' => AUTHNET_SIM_TXN_MODE_LIVE_TEST,
+    'txn_type' => COMMERCE_CREDIT_AUTH_CAPTURE,
+    'email_customer' => FALSE,
+  );
+
+  $form['login'] = array(
+    '#type' => 'textfield',
+    '#title' => t('API Login ID'),
+    '#description' => t('Where this can be found.'),
+    '#default_value' => $settings['login'],
+    '#required' => TRUE,
+  );
+  
+  $form['tran_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Transaction Key'),
+    '#description' => t('Where this can be found.'),
+    '#default_value' => $settings['tran_key'],
+    '#required' => TRUE,
+  );
+  
+  $form['txn_mode'] = array(
+    '#type' => 'radios',
+    '#title' => t('Transaction mode'),
+    '#description' => t('Adjust to live transactions when you are ready to start processing real payments.') . '<br />' . t('Only specify a developer test account if you login to your account through https://test.authorize.net.'),
+    '#options' => array(
+      AUTHNET_SIM_TXN_MODE_LIVE => t('Live transactions in a live account'),
+      AUTHNET_SIM_TXN_MODE_LIVE_TEST => t('Test transactions in a live account'),
+      AUTHNET_SIM_TXN_MODE_DEVELOPER => t('Developer test account transactions'),
+    ),
+    '#default_value' => $settings['txn_mode'],
+  );
+  
+  $form['txn_type'] = array(
+    '#type' => 'radios',
+    '#title' => t('Default credit card transaction type'),
+    '#description' => t('The default will be used to process transactions during checkout.'),
+    '#options' => array(
+      COMMERCE_CREDIT_AUTH_CAPTURE => t('Authorization and capture'),
+      COMMERCE_CREDIT_AUTH_ONLY => t('Authorization only (requires manual or automated capture after checkout)'),
+    ),
+    '#default_value' => $settings['txn_type'],
+  );
+  
+  $form['email_customer'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Tell Authorize.net to e-mail the customer a receipt based on your account settings.'),
+    '#default_value' => $settings['email_customer'],
+  );
+
+  return $form;
+}
+
+/**
+ * Payment method callback: redirect form, a wrapper around the module's general
+ *   use function for building a WPS form.
+ */
+function commerce_authnet_sim_redirect_form($form, &$form_state, $order, $payment_method) {
+  // Return an error if the enabling action's settings haven't been configured.
+  if (empty($payment_method['settings']['login']) OR empty($payment_method['settings']['tran_key'])) {
+    drupal_set_message(t('Authorize.net SIM is not configured for use.'), 'error');
+    return array();
+  }
+
+  $settings = array(
+    // Return to the previous page when payment is canceled
+    'cancel_return' => url('checkout/' . $order->order_id . '/payment/back/' . $order->data['payment_redirect_key'], array('absolute' => TRUE)),
+
+    // Return to the payment redirect page for processing successful payments
+    'return' => url('checkout/' . $order->order_id . '/payment/return/' . $order->data['payment_redirect_key'], array('absolute' => TRUE)),
+
+    // Specify the current payment method instance ID in the notify_url
+    'payment_method' => $payment_method['instance_id'],
+  );
+
+  return commerce_authnet_sim_order_form($form, $form_state, $order, $payment_method['settings'] + $settings);
+}
+
+/**
+ * Payment method callback: redirect form return validation.
+ */
+function commerce_authnet_sim_redirect_form_validate($order, $payment_method) {
+  
+}
+
+/**
+ * Builds a Authorize SIM form from an order object.
+ *
+ * @param $order
+ *   The fully loaded order being paid for.
+ * @param $settings
+ *
+ * @return
+ *   A renderable form array.
+ */
+function commerce_authnet_sim_order_form($form, &$form_state, $order, $settings) {
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+
+  $currency_code = $wrapper->commerce_order_total->currency_code->value();
+  $amount = $wrapper->commerce_order_total->amount->value();
+  $x_amount = round(commerce_currency_amount_to_decimal($amount, $currency_code), 2);
+  
+  // Ensure a default value for the payment_method setting.
+  $settings += array('payment_method' => '');
+
+  $data = array(
+    // essentials & good practice params
+    'x_login' => $settings['login'],
+    'x_type' => commerce_authnet_sim_txn_type($settings['txn_type']),
+    'x_amount' => $x_amount,
+    'x_show_form' => 'payment_form',
+    'x_relay_response' => 'false',
+    // return/redirect back values
+    'x_receipt_link_method' => 'post',
+    'x_receipt_link_text' => 'Click here for the secure payment form',
+    'x_receipt_link_url' => $settings['return'],
+    // customer ip
+    'x_customer_ip' => substr(ip_address(), 0, 15),
+    'x_version' => '3.1',
+    'x_method' => 'cc',
+    'x_invoice_num' => $order->order_number,
+    'x_test_request' => $settings['txn_mode'] == AUTHNET_TXN_MODE_LIVE_TEST ? 'TRUE' : 'FALSE',
+    'x_email' => substr($order->mail, 0, 255),
+    'x_email_customer' => $settings['email_customer'],
+    'x_cust_id' => substr($order->uid, 0, 20),
+  );
+  
+  //
+  // create the MD5 hash fingerprint
+  //
+
+  // Seed random number for security and better randomness.
+  srand(time());
+  $sequence = rand(1, 1000);
+  $tstamp = time();
+  
+  /**
+   * Authorize.net SIM functions
+   */
+  
+  $fingerprint = hash_hmac('md5', $settings['login'] . "^" . $sequence . "^" . $tstamp . "^" . $x_amount . "^", $settings['tran_key']);
+  
+  $data['x_fp_hash'] = $fingerprint;
+  $data['x_fp_timestamp'] = $tstamp;
+  $data['x_fp_sequence'] = $sequence;
+
+  $form['#action'] = commerce_authnet_sim_server_url($settings['txn_mode']);
+
+  foreach ($data as $name => $value) {
+    if (!empty($value)) {
+      $form[$name] = array('#type' => 'hidden', '#value' => $value);
+    }
+  }
+  
+  //echo '<pre>';
+  //print_R($form);die;
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Proceed to Authorize.NET'),
+  );
+
+  return $form;
+}
+
+/**
+ * Returns the transaction type string for Authorize.Net that corresponds to the
+ *   Drupal Commerce constant.
+ *
+ * @param $txn_type
+ *   A Drupal Commerce transaction type constant.
+ */
+function commerce_authnet_sim_txn_type($txn_type) {
+  switch ($txn_type) {
+    case COMMERCE_CREDIT_AUTH_ONLY:
+      return 'AUTH_ONLY';
+    case COMMERCE_CREDIT_PRIOR_AUTH_CAPTURE:
+      return 'PRIOR_AUTH_CAPTURE';
+    case COMMERCE_CREDIT_AUTH_CAPTURE:
+      return 'AUTH_CAPTURE';
+    case COMMERCE_CREDIT_REFERENCE_SET:
+    case COMMERCE_CREDIT_REFERENCE_TXN:
+    case COMMERCE_CREDIT_REFERENCE_REMOVE:
+    case COMMERCE_CREDIT_REFERENCE_CREDIT:
+      return NULL;
+    case COMMERCE_CREDIT_CREDIT:
+      return 'CREDIT';
+    case COMMERCE_CREDIT_VOID:
+      return 'VOID';
+  }
+}
+
+/**
+ * Returns the URL to the Authorize.Net server determined by transaction mode.
+ *
+ * @param $txn_mode
+ *   The transaction mode that relates to the live or test server.
+ *
+ * @return
+ *   The URL to use to submit requests to the Authorize.Net server.
+ */
+function commerce_authnet_sim_server_url($txn_mode) {
+  switch ($txn_mode) {
+    case AUTHNET_SIM_TXN_MODE_LIVE:
+    case AUTHNET_SIM_TXN_MODE_LIVE_TEST:
+      return 'https://secure.authorize.net/gateway/transact.dll';
+    case AUTHNET_SIM_TXN_MODE_DEVELOPER:
+      return 'https://test.authorize.net/gateway/transact.dll';
+  }
+}
