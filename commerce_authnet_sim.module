@@ -24,7 +24,7 @@ function commerce_authnet_sim_commerce_payment_method_info() {
     'description' => t('Integrates Authorize.Net Simple Integration Method for card not present CC transactions.'),
     'terminal' => FALSE,
     'offsite' => TRUE,
-    'offsite_autoredirect' => FALSE,
+    'offsite_autoredirect' => TRUE,
   );
 
   return $payment_methods;
@@ -140,7 +140,7 @@ function commerce_authnet_sim_order_form($form, &$form_state, $order, $settings)
 
   $currency_code = $wrapper->commerce_order_total->currency_code->value();
   $amount = $wrapper->commerce_order_total->amount->value();
-  $x_amount = round(commerce_currency_amount_to_decimal($amount, $currency_code), 2);
+  $amount = round(commerce_currency_amount_to_decimal($amount, $currency_code), 2);
   
   // Ensure a default value for the payment_method setting.
   $settings += array('payment_method' => '');
@@ -149,7 +149,7 @@ function commerce_authnet_sim_order_form($form, &$form_state, $order, $settings)
     // essentials & good practice params
     'x_login' => $settings['login'],
     'x_type' => commerce_authnet_sim_txn_type($settings['txn_type']),
-    'x_amount' => $x_amount,
+    'x_amount' => $amount,
     'x_show_form' => 'payment_form',
     'x_relay_response' => 'false',
     // return/redirect back values
@@ -167,6 +167,50 @@ function commerce_authnet_sim_order_form($form, &$form_state, $order, $settings)
     'x_cust_id' => substr($order->uid, 0, 20),
   );
   
+  // Prepare the billing address for use in the request.
+  $billing_address = $wrapper->commerce_customer_billing->commerce_customer_address->value();
+  
+  if (empty($billing_address['first_name'])) {
+    $name_parts = explode(' ', $billing_address['name_line']);
+    $billing_address['first_name'] = array_shift($name_parts);
+    $billing_address['last_name'] = implode(' ', $name_parts);
+  }
+  
+  // Add additional transaction invormation to the request array.
+  $data += array(
+    // Billing Information
+    'x_first_name' => substr($billing_address['first_name'], 0, 50),
+    'x_last_name' => substr($billing_address['last_name'], 0, 50),
+    'x_company' => substr($billing_address['organisation_name'], 0, 50),
+    'x_address' => substr($billing_address['thoroughfare'], 0, 60),
+    'x_city' => substr($billing_address['locality'], 0, 40),
+    'x_state' => substr($billing_address['administrative_area'], 0, 40),
+    'x_zip' => substr($billing_address['postal_code'], 0, 20),
+    'x_country' => $billing_address['country'],
+  );
+  
+  // Prepare the shipping address for use in the request.
+  $shipping_address = $wrapper->commerce_customer_shipping->commerce_customer_address->value();
+  
+  if (empty($shipping_address['first_name'])) {
+    $name_parts = explode(' ', $shipping_address['name_line']);
+    $shipping_address['first_name'] = array_shift($name_parts);
+    $shipping_address['last_name'] = implode(' ', $name_parts);
+  }
+  
+  // Add additional transaction invormation to the request array.
+  $data += array(
+    // Billing Information
+    'x_ship_to_first_name' => substr($shipping_address['first_name'], 0, 50),
+    'x_ship_to_last_name' => substr($shipping_address['last_name'], 0, 50),
+    'x_ship_to_company' => substr($shipping_address['organisation_name'], 0, 50),
+    'x_ship_to_address' => substr($shipping_address['thoroughfare'], 0, 60),
+    'x_ship_to_city' => substr($shipping_address['locality'], 0, 40),
+    'x_ship_to_state' => substr($shipping_address['administrative_area'], 0, 40),
+    'x_ship_to_zip' => substr($shipping_address['postal_code'], 0, 20),
+    'x_ship_to_country' => $shipping_address['country'],
+  );
+  
   //
   // create the MD5 hash fingerprint
   //
@@ -180,7 +224,7 @@ function commerce_authnet_sim_order_form($form, &$form_state, $order, $settings)
    * Authorize.net SIM functions
    */
   
-  $fingerprint = hash_hmac('md5', $settings['login'] . "^" . $sequence . "^" . $tstamp . "^" . $x_amount . "^", $settings['tran_key']);
+  $fingerprint = hash_hmac('md5', $settings['login'] . "^" . $sequence . "^" . $tstamp . "^" . $amount . "^", $settings['tran_key']);
   
   $data['x_fp_hash'] = $fingerprint;
   $data['x_fp_timestamp'] = $tstamp;
